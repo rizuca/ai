@@ -182,6 +182,14 @@ div[data-testid="stMetricDelta"] {
     font-size: 0.8rem;
     font-weight: 700;
 }
+.badge-review {
+    background: #fef3c7;
+    color: #92400e;
+    padding: 4px 12px;
+    border-radius: 9999px;
+    font-size: 0.8rem;
+    font-weight: 700;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -215,6 +223,46 @@ def clean_text(text, slang_dict):
     words = text.split()
     words = [slang_dict.get(word, word) for word in words]
     return ' '.join(words)
+
+REVIEW_KEYWORDS = {
+    "Abusive": {
+        "anjing", "bangsat", "goblok", "bodoh", "tolol", "bego", "idiot",
+        "kontol", "memek", "bajingan", "tai", "mampus", "bacot"
+    },
+    "HS_Religion": {
+        "islam", "muslim", "kafir", "kristen", "katolik", "buddha", "hindu",
+        "agama", "agamanya", "allah", "gereja", "masjid", "quran", "alquran"
+    },
+    "HS_Race": {
+        "cina", "chindo", "pribumi", "asing", "aseng", "komunis", "pki",
+        "partai komunis indonesia", "jawa", "batak", "sunda", "madura", "papua"
+    },
+    "HS_Physical": {
+        "cacat", "picek", "budek", "buta", "tuli", "jelek", "gendut",
+        "kurus", "pesek", "hitam", "muka", "fisik"
+    },
+    "HS_Gender": {
+        "banci", "bencong", "waria", "perempuan", "cewek", "cowok",
+        "laki", "lelaki", "betina", "jantan"
+    },
+    "HS_Group": {
+        "kaum", "kelompok", "golongan", "mereka", "komunitas", "ormas"
+    },
+    "HS_Individual": {
+        "lu", "kamu", "kau", "dia", "orang", "anak", "bapak", "ibu"
+    },
+}
+
+def detect_review_keywords(cleaned_text):
+    padded = f" {cleaned_text} "
+    detected = {}
+    for label, keywords in REVIEW_KEYWORDS.items():
+        detected[label] = any(f" {keyword} " in padded for keyword in keywords)
+    return detected
+
+CONTENT_REVIEW_LABELS = [
+    "Abusive", "HS_Religion", "HS_Race", "HS_Physical", "HS_Gender"
+]
 
 
 # ══════════════════════════════════════════════════
@@ -292,6 +340,18 @@ if analyze_btn:
         is_religion = bool(res.get('HS_Religion', 0))
         is_race = bool(res.get('HS_Race', 0))
         is_physical = bool(res.get('HS_Physical', 0))
+        is_gender = bool(res.get('HS_Gender', 0))
+
+        review_flags = detect_review_keywords(cleaned)
+        has_sensitive_content = any(review_flags.get(label, False) for label in CONTENT_REVIEW_LABELS)
+        needs_review = has_sensitive_content and not any(bool(v) for v in res.values())
+        review_abusive = review_flags.get("Abusive", False) and not is_abusive
+        review_individual = needs_review and review_flags.get("HS_Individual", False) and not is_individual
+        review_group = needs_review and review_flags.get("HS_Group", False) and not is_group
+        review_religion = review_flags.get("HS_Religion", False) and not is_religion
+        review_race = review_flags.get("HS_Race", False) and not is_race
+        review_physical = review_flags.get("HS_Physical", False) and not is_physical
+        review_gender = review_flags.get("HS_Gender", False) and not is_gender
 
         # Severity Logic
         if res.get('HS_Strong', 0) or (is_hs and (is_group or is_religion)):
@@ -300,6 +360,8 @@ if analyze_btn:
             severity = "SEDANG"
         elif is_abusive:
             severity = "RENDAH"
+        elif needs_review:
+            severity = "PERLU DITINJAU"
         else:
             severity = "AMAN"
 
@@ -311,16 +373,16 @@ if analyze_btn:
         with m1:
             st.metric(
                 "Hate Speech",
-                "TERDETEKSI" if is_hs else "AMAN",
-                "- Ujaran Kebencian" if is_hs else "+ Bebas Kebencian",
-                delta_color="inverse" if is_hs else "normal"
+                "TERDETEKSI" if is_hs else ("REVIEW" if needs_review else "AMAN"),
+                "- Ujaran Kebencian" if is_hs else ("! Ada kata sensitif" if needs_review else "+ Bebas Kebencian"),
+                delta_color="inverse" if is_hs or needs_review else "normal"
             )
         with m2:
             st.metric(
                 "Abusive Language",
-                "TERDETEKSI" if is_abusive else "AMAN",
-                "- Kata Kasar" if is_abusive else "+ Bahasa Sopan",
-                delta_color="inverse" if is_abusive else "normal"
+                "TERDETEKSI" if is_abusive else ("REVIEW" if review_abusive else "AMAN"),
+                "- Kata Kasar" if is_abusive else ("! Kata kasar sensitif" if review_abusive else "+ Bahasa Sopan"),
+                delta_color="inverse" if is_abusive or review_abusive else "normal"
             )
         with m3:
             st.metric(
@@ -334,8 +396,13 @@ if analyze_btn:
         st.write("")
 
         # ── Detail Analysis in 2 clean cards ──
-        def tag_row(label, detected):
-            badge = '<span class="badge-danger">Terdeteksi</span>' if detected else '<span class="badge-safe">Aman</span>'
+        def tag_row(label, detected, review=False):
+            if detected:
+                badge = '<span class="badge-danger">Terdeteksi</span>'
+            elif review:
+                badge = '<span class="badge-review">Review</span>'
+            else:
+                badge = '<span class="badge-safe">Aman</span>'
             return f'<div class="tag-item"><span class="tag-label">{label}</span>{badge}</div>'
 
         col_left, col_right = st.columns(2)
@@ -344,8 +411,8 @@ if analyze_btn:
             st.markdown(f"""
             <div class="result-card">
                 <h4>🎯 Target Serangan</h4>
-                {tag_row("Individu", is_individual)}
-                {tag_row("Kelompok", is_group)}
+                {tag_row("Individu", is_individual, review_individual)}
+                {tag_row("Kelompok", is_group, review_group)}
             </div>
             """, unsafe_allow_html=True)
 
@@ -353,9 +420,10 @@ if analyze_btn:
             st.markdown(f"""
             <div class="result-card">
                 <h4>⚖️ Kategori SARA</h4>
-                {tag_row("Agama (Religion)", is_religion)}
-                {tag_row("Ras / Etnis (Race)", is_race)}
-                {tag_row("Fisik (Physical)", is_physical)}
+                {tag_row("Agama (Religion)", is_religion, review_religion)}
+                {tag_row("Ras / Etnis (Race)", is_race, review_race)}
+                {tag_row("Fisik (Physical)", is_physical, review_physical)}
+                {tag_row("Gender", is_gender, review_gender)}
             </div>
             """, unsafe_allow_html=True)
 
@@ -366,3 +434,4 @@ if analyze_btn:
         with st.expander("🔧 Tampilkan Data Preprocessing (KDD)"):
             st.markdown(f"**Teks Mentah:** `{user_input}`")
             st.markdown(f"**Teks Bersih (Case Folding, Cleansing, Slang Normalization):** `{cleaned}`")
+            st.markdown(f"**Rule Review:** `{', '.join([k for k, v in review_flags.items() if v]) or 'Tidak ada'}`")
